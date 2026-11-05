@@ -1,0 +1,28 @@
+{
+  "state_file": "/root/agy-bridge/quota_state.json",
+  "governor_state_file": "/root/agy-bridge/governor_state.json",
+  "stale_s": 600,
+  "ladder": {
+    "effort_low_below": 0.40,
+    "reflection_pause_below": 0.25,
+    "hard_floor_5h_below": 0.10,
+    "hard_floor_weekly_below": 0.15,
+    "hysteresis_margin": 0.05,
+    "reflection_restore_above": 0.30
+  },
+  "effort_inject": "low",
+  "low_effort_model_map": {
+    "gemini-3.8-flash-medium": "gemini-3.8-flash-low",
+    "gemini-3.8-flash-high": "gemini-3.8-flash-low"
+  },
+  "retry_after_floor_s": 30,
+  "notify_enabled": true,
+  "notify_script": "/root/agy-bridge/notify_owner.sh",
+  "notify_log": "/root/agy-bridge/governor_notify.log",
+  "wxclawbot_bin": "/usr/local/bin/wxclawbot",
+  "wxclawbot_accounts_dir": "/root/.openclaw/openclaw-weixin/accounts",
+  "livingmemory_config": "/opt/dafeiyu-wechat/data/config/astrbot_plugin_livingmemory_config.json",
+  "astrbot_service": "dafeiyu-astrbot",
+  "reflection_pause_value": 9999,
+  "reflection_resume_value": 10
+}

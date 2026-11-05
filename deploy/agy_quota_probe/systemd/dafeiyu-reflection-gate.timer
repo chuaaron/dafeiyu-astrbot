@@ -1,0 +1,11 @@
+[Unit]
+Description=Run reflection gate every 120s (V06b)
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=120s
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

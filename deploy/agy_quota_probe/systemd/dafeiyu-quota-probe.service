@@ -1,0 +1,16 @@
+[Unit]
+Description=agy quota probe (V06b governor sidecar; agy /usage -> quota_state.json)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root
+Environment=HOME=/root
+ExecStart=/usr/bin/python3 /root/agy-bridge/quota_probe.py --config /root/agy-bridge/governor.json
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=90
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

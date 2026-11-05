@@ -1,0 +1,16 @@
+[Unit]
+Description=LivingMemory reflection gate (V06b; pause/resume by quota tier)
+After=network-online.target dafeiyu-astrbot.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root
+Environment=HOME=/root
+ExecStart=/usr/bin/python3 /root/agy-bridge/reflection_gate.py --config /root/agy-bridge/governor.json
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
