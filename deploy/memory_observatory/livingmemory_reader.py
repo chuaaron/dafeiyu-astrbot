@@ -1,4 +1,4 @@
-"""Read-only projection for the inspected LivingMemory 2.7.0-beta.2 schema.
+"""Read-only projection for the inspected LivingMemory schemas (2.7.0-beta.2 / 2.9.1).
 
 This file also runs through SSH stdin with Python's standard library. It imports
 no plugin code, opens no conversation database, and has no network/write calls.
@@ -16,11 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SUPPORTED_VERSION = "2.7.0-beta.2"
+# V04: the VPS runs 2.9.1; column names, metadata keys (create_time /
+# last_access_time / session_id / persona_id) and graph tables were verified
+# against the installed 2.9.1 schema before allowing it here.
+SUPPORTED_VERSIONS = {SUPPORTED_VERSION, "2.9.1"}
 MAX_RECORDS = 500
 ATOM_KINDS = {"episodic": "episode", "factual": "knowledge", "preference": "preference",
               "planned": "plan", "relational": "relation", "unknown": "unclassified"}
-DEFAULT_DB = "/opt/dafeiyu/astrbot/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"
-DEFAULT_METADATA = "/opt/dafeiyu/astrbot/data/plugins/astrbot_plugin_livingmemory/metadata.yaml"
+DEFAULT_DB = "/opt/dafeiyu-wechat/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"
+DEFAULT_METADATA = "/opt/dafeiyu-wechat/data/plugins/astrbot_plugin_livingmemory/metadata.yaml"
 
 
 class SourceError(ValueError):
@@ -77,7 +81,7 @@ def version_from_file(path):
 
 
 def read_snapshot(db_path, version, *, now=None):
-    if version != SUPPORTED_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise SourceError("LivingMemory version not supported; inspect schema before updating adapter")
     at = now or datetime.now(timezone.utc)
     if at.tzinfo is None:
