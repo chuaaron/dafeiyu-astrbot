@@ -639,3 +639,46 @@ real	0m3.196s
 2. **探针 timer 从不复装的 bug**：模板里 `IntervalSec=120` 不是 systemd `[Timer]` 合法指令（RPM 宏），结果 `Trigger: n/a`、状态文件 3.7h 未刷新→桥一直 stale 保守档。修复 = `OnBootSec=15 + OnUnitActiveSec=120s + AccuracySec=10s`（repo 模板与 VPS 单元同步改）。复装证据：`list-timers` LAST 依次 23:23:35 → 23:25:38（+120s 步进），quota_state.json fetched 23:25:42。
 3. **主人收到 3 条重复「额度见底」的根因**（更正上节 #5 的"发出过一次"）：`governor_notify.log` 显示 18:21 两次 `send failed (rc=0 ok=False)`——发生在 `--json` 修复**之前**，wxclawbot 实际已送达但脚本解析不到 JSON 误判失败，每次"重试"都真实发出；18:27 修复后又发 1 次，共 3 条。去重机制本身正确（18:27:33 `dedup` 拦截）。生产期自此零误发。教训：**"解析失败≠发送失败"，通知类外呼必须幂等（先查后发或按窗口预戳）**，已记入 skill。
 
+
+## V06d · face_convert 微信分叉
+
+执行日期 2026-11-05（VPS 时间 CET）。范围：**文本级**微信分支——入站身份标记、出站文本卫生 + 表情 token emoji 降级；媒体/视频入站接线不在本节（属 Mac 媒体接线阶段）。
+
+### 1. 分叉设计（仓库改动，未 commit）
+
+- `plugin/astrbot_plugin_face_convert/main.py`（v1.3.2 → v1.5.0）：
+  - 新配置键 `wechat_mode_enabled`（**默认 false**，仓库文化）与 `wechat_owner_map`（wxid -> 显示名，仓库出厂为空 + schema hint 给示例）；走 AstrBot 标准机制（新增 `_conf_schema.json`，`data/config/astrbot_plugin_face_convert_config.json` 优先于旧同目录 config.json，QQ 部署行为不变）。
+  - 入站：`weixin_oc` 事件按 owner_map 打 `[主人(<wxid>)]` 标记（与 QQ `主人(sid)` 同精神，只进 LLM 上下文）；陌生发送者打 `[朋友(<wxid 去 @ 后缀后尾4位>)]`（实测 weixin_oc 昵称=wxid，代码里按"像 id 的不算真名字"判定）；开关关闭或平台不认识 -> 完全不动。QQ/aiocqhttp 分支逐行原样保留。
+  - 出站：文本卫生（拆壳/嘴硬橡皮擦/meta 清扫/标点归一/NO_REPLY/<thought> 防漏）本就平台无关，微信路径同样生效；`convert_faces` 在结果关口后对 weixin_oc 分支：已登记 token 按新文件 `wechat_face_map.json` 降级为 emoji 或平实描述词，**未知 [xxx] 一律原样保留**（可能是正常文字）；`wechat_mode_enabled=false` 时微信出站直通（不产出微信渲染不了的 Face 段、不脱括号）。
+  - 一处微信适配发现：weixin_oc `send_by_session` 把多个 Plain 段**无分隔拼接**（`weixin_oc_adapter.py` 源码 `pending_text += segment.text`），故结果关口拆壳在微信路径合成单段保留 `\n`（QQ 路径仍按行拆段，回归不变）。
+- `wechat_face_map.json`：38 条（22 emoji + 16 去括号描述词），每条依据写在文件 `_说明`/`_basis`（【梗名】旺柴/doge→🐶 有插件自身 id2name 佐证；【字面语义】名字即含义的直译；【去括号】无可靠 emoji 对应）。**best-effort，不宣称 QQ 图形形状**；其余 ~288 个 QQ 表情不入表。测试校验"降级表键必须同时存在于 face_map.json"，无幽灵条目。
+- `metadata.yaml`：version v1.5.0、desc 更新、`support_platforms` 加 `weixin_oc`（4.29.4 源码核实：该字段仅 dashboard 元数据，**不做事件门控**，QQ 不受影响）。
+
+### 2. 离线测试（Mac，真实输出）
+
+- `python3.11 -B -m unittest discover -s tests -p 'test_face_*.py'` → **Ran 14 tests OK**（新增 `tests/test_face_wechat.py`：owner/陌生身份标记、mode=false 完全直通、旺柴→🐶、未知 token 不动、去括号条目、QQ Face 段与「主人的朋友」回归、卫生三件套在微信路径生效、NO_REPLY 吞并在微信生效、config 合并/默认关、幽灵条目校验）+ test_face_rules.py 脚本断言全绿。
+- `test_chat_layout.py` → 全通过 OK；`test_video_processing.py`（需 aiohttp+ffmpeg，用 `uv run --no-project -p 3.11 --with aiohttp`）→ **Ran 16 tests OK**。
+- 中途修掉两个测试桩/逻辑 bug：组件桩 `Image=object` 导致误判图片；sender_name 截断后与 wxid 比较失真（改为截断前判 id）。
+
+### 3. VPS 部署与验收证据
+
+- `scp -r` 插件目录 → `/opt/dafeiyu-wechat/data/plugins/astrbot_plugin_face_convert/`（此前 VPS 无该插件，`CLEAN` 确认）。
+- 配置写入与 `kill -9` **同一命令串**完成（utf-8-sig BOM 保留）：`wechat_mode_enabled=true` + `wechat_owner_map={"o9cq8077***yoCI@im.wechat": "主人"}`。
+- **踩坑实录**：首装加载失败 `KeyError: 'items'` —— AstrBot 4.29.4 schema 的 `"object"` 类型是嵌套子结构（强制要 `items` 子 schema），自由映射必须用 `"dict"` 类型（`core/config/astrbot_config.py:182`、`default.py` DEFAULT_VALUE_MAP 含 dict）。改 schema 后（schema 文件属插件静态资产，非内存态回写对象，单独 scp+kill 同串）加载成功。
+- journal 实据（00:20:23，`systemctl is-active` → active）：
+
+```
+[star.star_manager:1215]: Plugin astrbot_plugin_face_convert (v1.5.0) by dafeiyu-tools: 将LLM回复中的 [流泪][doge] 等文字表情转换为QQ真实表情段；微信(weixin_oc)分支下降级为 emoji 并注入身份标记（wechat_mode_enabled 默认关）
+[astrbot_plugin_face_convert.main:303]: [face_convert] 表情字典载入完成，共 326 条；语音转写未配置（未配置，模型 qwen3-asr-flash/qwen3-vl-plus）；微信分支开启（owner 映射 1 条，emoji 降级表 38 条）
+```
+
+- Traceback 计数（加载窗口 + 运行 75s 后复查）：`0`；服务 active；兄弟服务不受影响（本节只动 astrbot 进程）。
+- 配置存活复查（重生 75s 后回读）：`keys: ['wechat_mode_enabled', 'wechat_owner_map']`、`mode: True owner: ['主人'] wxid tail4: yoCI`。
+
+### 诚实边界（V06d）
+
+1. **应用层实证 pending-owner**：她是否真的"称主人、发 emoji 不发 [旺柴]"需主人微信发一轮（如"心情不错 [旺柴]"风格的对话或诱导她发表情）后看回复与 journal `微信身份标记: 主人(...)` / `微信表情降级` 行；本轮只证明插件加载、配置存活、逻辑离线正确。
+2. emoji 降级表是**语义 best-effort**（依据逐条标注），未经 QQ 图形比对；未入表的 ~288 个表情 token 若出现在微信回复里会原样保留方括号。
+3. 访客/多朋友场景无真实对手方：`[朋友(尾4)]` 只有离线桩测试证据；wechat_owner_map 只配了主人一人。
+4. 微信入站语音：asr_key 未配置（VPS 无 dashscope 接线），语音消息会降级成 `[对方发来一条语音（你没听清）]` 注入；视频/图片入站媒体接线属后续 Mac 媒体接线阶段。
+5. 无 git commit；未触碰 LivingMemory 配置/providers/人格/cmd_config platforms；agy-bridge/LM/schedule_awareness/系统服务未动。

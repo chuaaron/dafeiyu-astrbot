@@ -1,0 +1,14 @@
+{
+  "wechat_mode_enabled": {
+    "description": "微信（weixin_oc）分支总开关",
+    "hint": "开启后：weixin_oc 入站消息加身份标记，出站表情 token 降级为 emoji（见 wechat_face_map.json）。默认关闭，QQ/aiocqhttp 行为不受影响。",
+    "type": "bool",
+    "default": false
+  },
+  "wechat_owner_map": {
+    "description": "微信主人映射（wxid -> 显示名）",
+    "hint": "示例：{\"o9cq80xxxxxxxxxxxxxxxxxxxxxxxxxxx@im.wechat\": \"主人\"}。映射里没有的发送者标为「朋友(<wxid尾4位>)」。",
+    "type": "dict",
+    "default": {}
+  }
+}

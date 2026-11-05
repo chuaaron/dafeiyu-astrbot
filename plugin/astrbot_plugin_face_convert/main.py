@@ -1,9 +1,23 @@
-"""把 LLM 回复中的 [表情名] 文字自动转换成真实 QQ 表情段。
+"""把 LLM 回复中的 [表情名] 文字自动转换成真实 QQ 表情段（QQ/aiocqhttp），
+或降级为 Unicode emoji（个人微信 weixin_oc）。
 
 原理：QQ 只在"人手输入"时把 [旺柴] 这类文字渲染成表情，
 机器人发出的纯文本接收端只会看到字面量。本插件在消息发送前
 把 [名字] 替换为真正的 face 消息段（NapCat / OneBot v11）。
 字典来源：NapCat 内置 qface 表 + 社区 315 条 sysface 快照合并（414 条）。
+
+微信分叉（v1.5.0 起，wechat_mode_enabled 默认关）：
+- weixin_oc 没有 face 消息段，字面 [旺柴] 很丑；出站时把表情 token
+  按 wechat_face_map.json 降级成 emoji（映射依据逐条标注在该文件表头），
+  字典里没登记的 [xxx] 一律原样保留（可能是正常文字，不能猜）。
+- 入站身份标记：wechat_owner_map（wxid -> 显示名，如 主人）里的发送者
+  标 [主人(<wxid>)]，其余标 [朋友(<wxid 尾4位>)]；只进 LLM 上下文。
+- 文本卫生（嘴硬橡皮擦/meta 清扫/标点归一/消息数组拆壳）本来就平台无关，
+  微信路径同样生效；wechat_mode_enabled=false 时微信事件完全直通
+  （不打身份标记，也不产出微信端无法渲染的 Face 段）。
+配置走 AstrBot 标准机制：_conf_schema.json +
+data/config/astrbot_plugin_face_convert_config.json（新增键）；
+旧的同目录 config.json 仍兼容（QQ 部署原样工作），标准配置优先级更高。
 """
 
 import ast
@@ -54,6 +68,10 @@ DEFAULT_CONFIG = {
     "asr_timeout_s": 60,
     "max_concurrent_media": 1,
     "media_queue_timeout_s": 10,
+    # ---- 微信（weixin_oc）分支：仓库文化是默认关 ----
+    "wechat_mode_enabled": False,
+    # wxid -> 显示名（如 主人）；空 = 只按"朋友"降级处理
+    "wechat_owner_map": {},
 }
 
 
@@ -157,8 +175,8 @@ async def run_bounded(
 @register(
     "astrbot_plugin_face_convert",
     "dafeiyu-tools",
-    "把 LLM 回复中的 [流泪][doge] 等文字表情自动转换为真实 QQ 表情段",
-    "1.3.2",
+    "把 LLM 回复中的 [流泪][doge] 等文字表情转换为真实 QQ 表情段；微信(weixin_oc)下降级为 emoji",
+    "1.5.0",
 )
 class FaceConvertPlugin(Star):
     # 静默暗号只在“整条回复就是它”时生效；正常解释这个标记时不能吞整条。
@@ -193,6 +211,38 @@ class FaceConvertPlugin(Star):
                 self.cfg.update({k: loaded[k] for k in loaded if k in self.cfg})
         except (OSError, ValueError):
             pass
+        # AstrBot 标准插件配置（_conf_schema.json -> data/config/<plugin>_config.json）
+        # 优先级高于同目录旧 config.json；键按 DEFAULT_CONFIG 白名单过滤。
+        if isinstance(config, dict):
+            self.cfg.update({k: config[k] for k in config if k in self.cfg})
+        owner_map = self.cfg.get("wechat_owner_map")
+        if not isinstance(owner_map, dict):
+            owner_map = {}
+        self.wechat_owner_map = {
+            str(k).strip(): str(v).strip()
+            for k, v in owner_map.items()
+            if str(k).strip() and str(v).strip()
+        }
+        self.cfg["wechat_owner_map"] = self.wechat_owner_map
+        # 微信 emoji 降级表：只装"映射依据写得出来"的条目（见文件表头），
+        # 文件缺失/损坏时微信表情 token 原样保留，不猜。
+        self.wechat_face_map: dict[str, str] = {}
+        try:
+            with open(
+                os.path.join(PLUGIN_DIR, "wechat_face_map.json"), encoding="utf-8"
+            ) as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                self.wechat_face_map = {
+                    k: v
+                    for k, v in raw.items()
+                    if not k.startswith("_") and isinstance(v, str) and v
+                }
+        except (OSError, ValueError):
+            logger.warning(
+                "[face_convert] wechat_face_map.json 缺失或损坏，"
+                "微信表情的 emoji 降级不可用（token 会原样保留）"
+            )
         # 配置错误不能把队列锁死或产生无上限的媒体任务。
         for key, low, high in (
             ("max_media_mb", 1, 200), ("video_timeout_s", 10, 900),
@@ -253,7 +303,10 @@ class FaceConvertPlugin(Star):
         logger.info(
             f"[face_convert] 表情字典载入完成，共 {len(self.face_map)} 条；"
             f"语音转写{'已就绪' if self.asr_key else '未配置'}"
-            f"（{key_source}，模型 {self.asr_model}/{self.vl_model}）"
+            f"（{key_source}，模型 {self.asr_model}/{self.vl_model}）；"
+            f"微信分支{'开启' if self.cfg.get('wechat_mode_enabled') else '关闭'}"
+            f"（owner 映射 {len(self.wechat_owner_map)} 条，"
+            f"emoji 降级表 {len(self.wechat_face_map)} 条）"
         )
 
     @staticmethod
@@ -740,9 +793,17 @@ class FaceConvertPlugin(Star):
                 logger.info(f"[face_convert] 收信翻译: {extra}")
 
         # 身份标记（只进她的上下文，对方看不到字面量）：
-        # 群聊 -> [昵称(QQ号)]，管理员标「主人」；陌生人私聊 -> [主人的朋友 昵称(QQ号)]
+        # QQ 群聊 -> [昵称(QQ号)]，管理员标「主人」；陌生人私聊 -> [主人的朋友 昵称(QQ号)]
+        # 微信 weixin_oc -> 独立的 _wechat_tag_inbound；其他平台保持旧行为。
         try:
-            if not event.get_extra("_fy_tagged"):
+            try:
+                plat = event.get_platform_name() or ""
+            except Exception:
+                plat = ""
+            if plat == "weixin_oc":
+                if self.cfg.get("wechat_mode_enabled"):
+                    self._wechat_tag_inbound(event)
+            elif not event.get_extra("_fy_tagged"):
                 sid = str(event.get_sender_id())
                 is_group = bool(event.get_group_id())
                 is_guest = (not is_group) and event.is_private_chat() and sid not in self.admins
@@ -1006,14 +1067,26 @@ class FaceConvertPlugin(Star):
         result = event.get_result()
         if result is None or not result.is_llm_result():
             return
+        try:
+            plat = event.get_platform_name() or ""
+        except Exception:
+            plat = ""
 
         # 结果关口再防一次消息数组壳：工具循环/流式的最终回复可能绕过
         # on_llm_response，只在全是 Plain 时整链还原，避免误碰图片/引用段。
+        # 微信注意：weixin_oc 的 send_by_session 会把多个 Plain 段无分隔拼接
+        # （adapter 源码 pending_text += segment.text），所以这里保留换行、
+        # 合成单段，让后续分段阶段按行拆气泡，而不是发出粘连文本。
         if result.chain and all(isinstance(c, Plain) for c in result.chain):
             joined = "".join(c.text or "" for c in result.chain)
             unwrapped = self._unwrap_message_shell(joined)
             if unwrapped != joined:
-                result.chain = [Plain(p) for p in unwrapped.split("\n") if p.strip()]
+                if plat == "weixin_oc":
+                    result.chain = [Plain(unwrapped)]
+                else:
+                    result.chain = [
+                        Plain(p) for p in unwrapped.split("\n") if p.strip()
+                    ]
                 logger.info("[face_convert] 已拆消息数组壳（结果关口）")
                 if not result.chain:
                     return
@@ -1085,6 +1158,15 @@ class FaceConvertPlugin(Star):
             result.chain = meta_chain or [Plain("……")]
             logger.info("[face_convert] 已清扫 meta 口癖/标点（结果关口）")
 
+        # 微信分支：weixin_oc 没有 face 消息段。启用时把已登记的 token
+        # 降级成 emoji；未启用时直接返回（不产出微信端渲染不了的 Face 段，
+        # 也不做脱括号兜底——完全直通）。上面的拆壳/防漏/暗号/meta 清扫
+        # 是平台无关的文本卫生，微信路径同样已经生效。
+        if plat == "weixin_oc":
+            if self.cfg.get("wechat_mode_enabled"):
+                self._wechat_degrade_faces(result)
+            return
+
         new_chain = []
         changed = 0
         stripped = 0
@@ -1141,6 +1223,72 @@ class FaceConvertPlugin(Star):
                 f"[face_convert] 已转换 {changed} 个文字表情 -> 真实表情段"
                 + (f"，脱括号 {stripped} 个（字典不认的）" if stripped else "")
                 + (f"，冷却丢弃 {dropped_faces} 个" if dropped_faces else "")
+            )
+
+    # ---------------- 微信（weixin_oc）分支 ----------------
+
+    def _wechat_tag_inbound(self, event: AstrMessageEvent) -> None:
+        """微信入站身份标记：主人按 wechat_owner_map 认出，其余降级为「朋友」。
+
+        与 QQ 分支同一精神：标记只进她的上下文（message_str），对方看不到。
+        weixin_oc 的 sender_name 实测就是 wxid 本身（adapter 直接拿
+        from_user_id 当昵称），所以"朋友"标签用 wxid 尾 4 位，避免长串噪声。
+        """
+        try:
+            if event.get_extra("_fy_tagged"):
+                return
+            sid = str(event.get_sender_id() or "").strip()
+            if not sid:
+                return
+            owner_name = self.wechat_owner_map.get(sid)
+            if owner_name:
+                tag = f"{owner_name}({sid})"
+            else:
+                full = (event.get_sender_name() or "").strip()
+                compact = re.sub(r"[\[\]\r\n]", "", full)[:16]
+                # weixin_oc 实测昵称就是 wxid 本身：像 id 的一律不算"真名字"
+                looks_like_id = (
+                    not full
+                    or full == sid
+                    or full.endswith("@im.wechat")
+                    or full.startswith("wxid_")
+                )
+                if compact and not looks_like_id:
+                    tag = f"朋友({compact})"
+                else:
+                    short = sid.split("@", 1)[0][-4:]
+                    tag = f"朋友({short})" if short else "朋友"
+            text = (event.message_str or "").strip()
+            if text:
+                event.message_str = f"[{tag}] {text}"
+                event.set_extra("_fy_tagged", True)
+                logger.info(f"[face_convert] 微信身份标记: {tag}")
+        except Exception as e:
+            logger.warning(f"[face_convert] 微信身份标记失败: {str(e)[:100]}")
+
+    def _wechat_degrade_faces(self, result) -> None:
+        """weixin_oc 出站：已登记的 [表情名] -> emoji/描述词，未登记者原样保留。
+
+        映射表 wechat_face_map.json 只收录"依据写得出来"的条目；
+        未知 [xxx] 可能是正常文字（如 [NO_REPLY] 之外的括注），不动。
+        """
+        if not self.wechat_face_map:
+            return
+        changed = 0
+        for comp in result.chain:
+            if not isinstance(comp, Plain) or not comp.text:
+                continue
+            orig = comp.text
+            comp.text = self.pattern.sub(
+                lambda m: self.wechat_face_map.get(m.group(1).strip(), m.group(0)),
+                orig,
+            )
+            if comp.text != orig:
+                changed += 1
+        if changed:
+            result.chain = [c for c in result.chain if not isinstance(c, Plain) or c.text.strip()]
+            logger.info(
+                f"[face_convert] 微信表情降级：{changed} 段文字里的 token 已换成 emoji/描述词"
             )
 
     # ---------------- 语音开关（会话级，走 AstrBot 官方会话配置） ----------------
