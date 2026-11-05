@@ -1,0 +1,18 @@
+[Unit]
+Description=Dafeiyu AstrBot (WeChat home, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=ASTRBOT_ROOT=/opt/dafeiyu-wechat
+Environment=DASHBOARD_HOST=127.0.0.1
+WorkingDirectory=/opt/dafeiyu-wechat
+ExecStart=/root/.local/bin/astrbot run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
