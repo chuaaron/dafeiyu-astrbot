@@ -224,6 +224,12 @@ class TestFaceWechat(unittest.TestCase):
         self.assertEqual(self._sent_text(result), "好呀 🐶 明天见")
         self.assertFalse(any(isinstance(c, Face) for c in result.chain))
 
+    def test_outbound_face_token_case_insensitive(self):
+        # V06d 真实冒烟：她写的是 [Doge]（大写 D），表内键是小写 doge，查表必须命中
+        result = FakeResult([Plain("[Doge] 满足你！看你下回还敢不敢熬夜。")])
+        asyncio.run(self.plugin.convert_faces(FakeSendEvent(result)))
+        self.assertEqual(self._sent_text(result), "🐶 满足你！看你下回还敢不敢熬夜。")
+
     def test_outbound_unknown_token_untouched(self):
         result = FakeResult([Plain("先看 [项目计划] 再说")])
         asyncio.run(self.plugin.convert_faces(FakeSendEvent(result)))

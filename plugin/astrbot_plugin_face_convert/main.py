@@ -243,6 +243,10 @@ class FaceConvertPlugin(Star):
                 "[face_convert] wechat_face_map.json 缺失或损坏，"
                 "微信表情的 emoji 降级不可用（token 会原样保留）"
             )
+        # 查表大小写不敏感：LLM 常写 [Doge]/[DOGE]，表内键为规范小写（V06d 冒烟实测漏配）。
+        self._wechat_face_ci = {
+            k.casefold(): v for k, v in self.wechat_face_map.items()
+        }
         # 配置错误不能把队列锁死或产生无上限的媒体任务。
         for key, low, high in (
             ("max_media_mb", 1, 200), ("video_timeout_s", 10, 900),
@@ -1280,7 +1284,9 @@ class FaceConvertPlugin(Star):
                 continue
             orig = comp.text
             comp.text = self.pattern.sub(
-                lambda m: self.wechat_face_map.get(m.group(1).strip(), m.group(0)),
+                lambda m: self._wechat_face_ci.get(
+                    m.group(1).strip().casefold(), m.group(0)
+                ),
                 orig,
             )
             if comp.text != orig:

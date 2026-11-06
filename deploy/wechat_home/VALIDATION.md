@@ -682,3 +682,7 @@ real	0m3.196s
 3. 访客/多朋友场景无真实对手方：`[朋友(尾4)]` 只有离线桩测试证据；wechat_owner_map 只配了主人一人。
 4. 微信入站语音：asr_key 未配置（VPS 无 dashscope 接线），语音消息会降级成 `[对方发来一条语音（你没听清）]` 注入；视频/图片入站媒体接线属后续 Mac 媒体接线阶段。
 5. 无 git commit；未触碰 LivingMemory 配置/providers/人格/cmd_config platforms；agy-bridge/LM/schedule_awareness/系统服务未动。
+
+## V06d 补 · 主人冒烟抓到的大小写漏配（父 agent，2026-11-05）
+
+主人微信实测回复出现 `[Doge] 满足你！…` 未降级。根因：`_wechat_degrade_faces` 查表大小写敏感（表键 `doge`，LLM 写 `Doge`），命中"未知 token 原样保留"分支且静默（changed=0 不打日志）。身份注入侧同轮验证 OK（journal `微信身份标记: 主人(o9cq8077***yoCI@im.wechat)`）。修复 = `_wechat_face_ci` 大小写不敏感查表 + 回归用例直接用主人冒烟原句（`test_outbound_face_token_case_insensitive`），face 套 15 项 OK；main.py 两端 md5 `5822b2ff…`，kill -9 重生后 `Plugin astrbot_plugin_face_convert (v1.5.0)` 加载、0 Traceback。应用层 emoji 实证待主人复测。教训入 skill：**降级类钩子必须对 LLM 输出风格（大小写/全半角）做归一化，且"未命中"要有 debug 级日志**。
